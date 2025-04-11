@@ -2,76 +2,62 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 
-st.set_page_config(page_title="Update Stok Shopee", layout="centered")
-st.title("🛍️ Update Stok Otomatis untuk Shopee")
+st.set_page_config(page_title="Stok Updater", layout="wide")
+st.title("📦 Shopee Mass Update - Penyesuaian Stok Berdasarkan Copybar")
 
-st.markdown("Upload file referensi **(CSV)** dan file mass update **Shopee (XLSX)**")
+copybar_file = st.file_uploader("📤 Upload file referensi (copybar) [.xls, .xlsx, .csv]", type=["xls", "xlsx", "csv"])
+massupdate_file = st.file_uploader("📤 Upload file Shopee Mass Update [.xlsx]", type=["xlsx"])
 
-# Upload file referensi CSV
-ref_file = st.file_uploader("📦 File Referensi Stok (.csv)", type=["csv"])
-
-# Upload file mass update dari Shopee
-mass_file = st.file_uploader("🛒 File Mass Update Shopee (.xlsx)", type=["xlsx"])
-
-
-def read_reference(file):
+def read_copybar(file):
     try:
-        df = pd.read_csv(file, sep=None, engine="python")  # fleksibel terhadap delimiter
-        df.columns = df.columns.str.strip()
-
-        if not {'SKU', 'Stok'}.issubset(df.columns):
-            st.error("❌ File referensi harus punya kolom 'SKU' dan 'Stok'")
-            return None
-
-        return df
+        if file.name.endswith(".csv"):
+            return pd.read_csv(file, header=None)
+        elif file.name.endswith(".xls"):
+            return pd.read_excel(file, header=None, engine='xlrd')
+        elif file.name.endswith(".xlsx"):
+            return pd.read_excel(file, header=None, engine='openpyxl')
+        else:
+            raise ValueError("Format file tidak didukung")
     except Exception as e:
         st.error(f"❌ Gagal membaca file referensi: {e}")
         return None
 
-
 def read_massupdate(file):
     try:
-        with pd.ExcelFile(file, engine="openpyxl") as xls:
-            df = pd.read_excel(xls, header=None, skiprows=6)  # sesuai template Shopee
+        # Baca tanpa parsing view settings untuk menghindari 'activePane' error
+        df = pd.read_excel(file, header=None, skiprows=6, engine='openpyxl')
         return df
     except Exception as e:
         st.error(f"❌ Gagal membaca file mass update: {e}")
         return None
 
+if copybar_file and massupdate_file:
+    df_ref = read_copybar(copybar_file)
+    df_update = read_massupdate(massupdate_file)
 
-def update_stock(reference_df, mass_df):
-    updated_df = mass_df.copy()
-    for idx, row in updated_df.iterrows():
-        sku = str(row[1]).strip()
-        stok_baru = reference_df.loc[reference_df['SKU'].astype(str).str.strip() == sku, 'Stok']
-        if not stok_baru.empty:
-            updated_df.at[idx, 3] = stok_baru.values[0]
-    return updated_df
+    if df_ref is not None and df_update is not None:
+        try:
+            # Ambil kolom SKU (A) dan stok (C) dari baris kedua dan set nama kolom
+            df_ref = df_ref.iloc[1:, [0, 2]]
+            df_ref.columns = ["SKU", "Stok"]
+            df_ref.dropna(subset=["SKU"], inplace=True)
+            df_ref["SKU"] = df_ref["SKU"].astype(str).str.strip()
 
+            # Ambil SKU dari kolom E (index 4) dan update kolom H (index 7)
+            df_update["SKU"] = df_update.iloc[:, 4].astype(str).str.strip()
+            df_update["stok_baru"] = df_update["SKU"].map(dict(zip(df_ref["SKU"], df_ref["Stok"])))
 
-def convert_df_to_excel(df):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, header=False)
-    output.seek(0)
-    return output
+            df_update.iloc[:, 7] = df_update["stok_baru"]
+            df_update.iloc[:, 7].fillna("SKU tidak ditemukan", inplace=True)
 
+            st.success("✅ Proses berhasil. Data siap diunduh.")
+            st.dataframe(df_update.iloc[:, [4, 7]])
 
-if ref_file and mass_file:
-    reference_df = read_reference(ref_file)
-    mass_df = read_massupdate(mass_file)
+            output = BytesIO()
+            df_update.to_excel(output, index=False, header=False, engine='openpyxl')
+            st.download_button("⬇️ Unduh hasil update", data=output.getvalue(), file_name="hasil_update.xlsx")
 
-    if reference_df is not None and mass_df is not None:
-        st.success("✅ File berhasil dibaca. Sedang memperbarui stok...")
-        updated_df = update_stock(reference_df, mass_df)
-
-        st.dataframe(updated_df.head(10))
-
-        # Download link
-        output = convert_df_to_excel(updated_df)
-        st.download_button(
-            label="⬇️ Download File Mass Update yang Sudah Diperbarui",
-            data=output,
-            file_name="updated_mass_update.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        except Exception as e:
+            st.error(f"❌ Terjadi kesalahan saat memproses file: {e}")
+else:
+    st.info("📁 Silakan unggah kedua file untuk mulai memproses.")
